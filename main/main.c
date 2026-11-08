@@ -31,7 +31,6 @@
 #include "driver/gpio.h"
 #include "state_manager.h"
 #include "heart_rate_manager.h"
-#include "antplus.h"
 #include "usb.h"
 #include "s4.h"
 #include "ble.h"
@@ -42,7 +41,6 @@
 //extern "C"
 void app_main(void)
 {
-    antplus_handle_t antplus_handle;
     s4_handle_t s4_handle;
     hrm_handle_t hrm_handle;
     ble_handle_t ble_handle;
@@ -61,6 +59,7 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_init());
     ESP_ERROR_CHECK(s4_init(sm_handle, hrm_handle, &s4_handle));
     ESP_ERROR_CHECK(ble_init(hrm_handle, s4_handle, &ble_handle));
-    ESP_ERROR_CHECK(antplus_init(sm_handle, hrm_handle, s4_handle, &antplus_handle));
+    // ANT+ radio module not populated in this build; antplus.c is excluded
+    // from the build in CMakeLists.txt (frees GPIO15/16/17/18).
 
 }

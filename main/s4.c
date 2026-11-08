@@ -182,6 +182,14 @@ static void s4_out_callback(usb_transfer_t* transfer)
     if (transfer->status != USB_TRANSFER_STATUS_COMPLETED)
     {
         ESP_LOGE(TAG, "outbound USB transfer failure (error %d)", transfer->status);
+        if (transfer->status == USB_TRANSFER_STATUS_NO_DEVICE)
+        {
+            // S4 disappeared mid-command.  Unblock the pending command and
+            // let the session task tear down instead of aborting.
+            driver->shutdown_pending = true;
+            xSemaphoreGive(driver->out_resp_sem);
+            return;
+        }
         if (transfer->status != USB_TRANSFER_STATUS_CANCELED)
         {
             abort();
@@ -192,21 +200,51 @@ static void s4_out_callback(usb_transfer_t* transfer)
     xSemaphoreGive(driver->out_resp_sem);
 }
 
+static bool s4_wait_for_device(s4_driver_t* driver)
+{
+    // USB-A VBUS is hardwired to the system 5V rail (no USB power switch),
+    // so the S4 is powered whenever the ESP32 is and enumerates on its own
+    // schedule shortly after power up.
+    int64_t last_warn_ts = 0;
+
+    while (driver->dev_addr == 0)
+    {
+        if (xSemaphoreTake(driver->device_sem, pdMS_TO_TICKS(1000)))
+        {
+            return true;    // NEW_DEV event received
+        }
+
+        // Cover the race where the S4 enumerated before this USB client was
+        // registered: no NEW_DEV event will be delivered for it, so poll the
+        // bus device list directly.
+        uint8_t addr_list[1];
+        int num_dev = 0;
+        if (usb_host_device_addr_list_fill(1, addr_list, &num_dev) == ESP_OK &&
+            num_dev > 0)
+        {
+            driver->dev_addr = addr_list[0];
+            ESP_LOGI(TAG, "Found existing USB device #%d", driver->dev_addr);
+            return true;
+        }
+
+        int64_t now = esp_timer_get_time();
+        if (now - last_warn_ts > 15000000)
+        {
+            ESP_LOGW(TAG, "Waiting for S4 on USB bus...");
+            last_warn_ts = now;
+        }
+    }
+
+    return true;
+}
+
 static void s4_session_task(void* arg)
 {
     s4_driver_t* driver = (s4_driver_t*)arg;
 
     for (;;)
     {
-        ESP_LOGI(TAG, "Waiting for power button press");
-        while (gpio_get_level(S4_POWER_BUTTON_GPIO_NUM) == 1)
-        {
-            vTaskDelay(200 / portTICK_PERIOD_MS);
-        }
-        ESP_LOGI(TAG, "Power button pressed");
-        gpio_set_level(S4_USB_POWER_GPIO_NUM, 1);
-
-        xSemaphoreTake(driver->device_sem, portMAX_DELAY);
+        s4_wait_for_device(driver);
 
         driver->power_on = true;
         driver->shutdown_pending = false;
@@ -240,12 +278,8 @@ static void s4_session_task(void* arg)
         }
 
         s4_values_t values;
-        int64_t last_last_stroke_start_ts;
         ESP_ERROR_CHECK(s4_get_values(driver, &values));
-        last_last_stroke_start_ts = values.last_stroke_start_ts;
-        ESP_LOGI(TAG, "Waiting for inactivity...");
-
-        int64_t inactive_ts = esp_timer_get_time();
+        ESP_LOGI(TAG, "Session started");
 
         do
         {
@@ -264,19 +298,13 @@ static void s4_session_task(void* arg)
             }
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             ESP_ERROR_CHECK(s4_get_values(driver, &values));
-            if (last_last_stroke_start_ts != values.last_stroke_start_ts)
-            {
-                inactive_ts = esp_timer_get_time();
-                last_last_stroke_start_ts = values.last_stroke_start_ts;
-            }
         }
-        while (!driver->shutdown_pending && 
-               esp_timer_get_time() - inactive_ts < S4_INACTIVTY_TIMEOUT * 1000000llu);
-        
-        ESP_LOGI(TAG, "shutting down...");
-        ESP_ERROR_CHECK(s4_shutdown(driver));
+        while (!driver->shutdown_pending);
 
-        ESP_LOGI(TAG, "session ended");
+        ESP_LOGI(TAG, "shutting down...");
+        s4_shutdown(driver);
+
+        ESP_LOGI(TAG, "session ended, waiting for S4 to reappear");
 
         driver->dev_hdl = NULL;
     }
@@ -313,26 +341,71 @@ static esp_err_t s4_setup(s4_driver_t* driver)
 
 static esp_err_t s4_shutdown(s4_driver_t* driver)
 {
-    ESP_ERROR_CHECK(usb_host_endpoint_halt(driver->dev_hdl, S4_USB_ENDPOINT_IN_ADDRESS));
-    ESP_ERROR_CHECK(usb_host_endpoint_flush(driver->dev_hdl, S4_USB_ENDPOINT_IN_ADDRESS));
-    ESP_ERROR_CHECK(usb_host_endpoint_halt(driver->dev_hdl, S4_USB_ENDPOINT_OUT_ADDRESS));
-    ESP_ERROR_CHECK(usb_host_endpoint_flush(driver->dev_hdl, S4_USB_ENDPOINT_OUT_ADDRESS));
+    // Best effort teardown.  The S4 may already be gone from the bus
+    // (unplugged / power glitch), in which case the USB library rejects
+    // these requests.  That must not abort: the session task simply goes
+    // back to waiting for the device to reappear.
+    esp_err_t ret;
+
+    ret = usb_host_endpoint_halt(driver->dev_hdl, S4_USB_ENDPOINT_IN_ADDRESS);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "endpoint halt (in) failed: %d", ret);
+    }
+    ret = usb_host_endpoint_flush(driver->dev_hdl, S4_USB_ENDPOINT_IN_ADDRESS);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "endpoint flush (in) failed: %d", ret);
+    }
+    ret = usb_host_endpoint_halt(driver->dev_hdl, S4_USB_ENDPOINT_OUT_ADDRESS);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "endpoint halt (out) failed: %d", ret);
+    }
+    ret = usb_host_endpoint_flush(driver->dev_hdl, S4_USB_ENDPOINT_OUT_ADDRESS);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "endpoint flush (out) failed: %d", ret);
+    }
+
     vTaskDelete(driver->out_transfer_task_handle);
     driver->out_transfer_task_handle = NULL;
 
     // process above events
     usb_host_client_handle_events(driver->client_hdl, 0);
 
-    ESP_ERROR_CHECK(usb_host_transfer_free(driver->in_transfer));
+    ret = usb_host_transfer_free(driver->in_transfer);
+    if (ret != ESP_OK)
+    {
+        // Still submitted (device vanished mid transfer); drop the pointer
+        // and let the library reclaim it.  Bounded leak in a corner case.
+        ESP_LOGW(TAG, "in transfer free failed: %d", ret);
+    }
     driver->in_transfer = NULL;
-    ESP_ERROR_CHECK(usb_host_transfer_free(driver->out_transfer));
+
+    ret = usb_host_transfer_free(driver->out_transfer);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "out transfer free failed: %d", ret);
+    }
     driver->out_transfer = NULL;
 
-    ESP_ERROR_CHECK(usb_host_interface_release(driver->client_hdl, driver->dev_hdl, S4_USB_INTERFACE_NUMBER));
-    ESP_ERROR_CHECK(usb_host_device_close(driver->client_hdl, driver->dev_hdl));
+    ret = usb_host_interface_release(driver->client_hdl, driver->dev_hdl, S4_USB_INTERFACE_NUMBER);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "interface release failed: %d", ret);
+    }
+
+    ret = usb_host_device_close(driver->client_hdl, driver->dev_hdl);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "device close failed: %d", ret);
+    }
     driver->dev_hdl = NULL;
     driver->dev_addr = 0;
 
+    // No-op when USB-A VBUS is hardwired to the 5V rail; kept so the
+    // original LM3525 based hardware keeps working.
     gpio_set_level(S4_USB_POWER_GPIO_NUM, 0);
     driver->power_on = false;
     driver->shutdown_pending = false;

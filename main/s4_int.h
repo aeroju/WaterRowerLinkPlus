@@ -1,5 +1,3 @@
-#define S4_INACTIVTY_TIMEOUT        (60 * 30)
-//#define S4_INACTIVTY_TIMEOUT        60
 #define S4_COMMAND_TIMEOUT          5000
 
 #define S4_MAX_PACKET_SIZE          64
@@ -17,12 +15,19 @@
 #define S4_COMMAND_USB_RESPONSE     "_WR_"
 #define S4_COMMAND_RESET            "RESET"
 
+// Control line for the LM3525 USB power switch on the original hardware.
+// Unused (dangling output) when USB-A VBUS is hardwired to the 5V rail; the
+// write in s4_shutdown is kept so the original PCB/breadboard still works.
 #define S4_USB_POWER_GPIO_NUM       GPIO_NUM_8
 #define S4_USB_POWER_GPIO_SEL       (1ull << S4_USB_POWER_GPIO_NUM)
+// Power button on the original hardware.  Unused with hardwired VBUS: the
+// main power switch turns everything on at once.
 #define S4_POWER_BUTTON_GPIO_NUM    GPIO_NUM_10
 #define S4_POWER_BUTTON_GPIO_SEL    (1ull << S4_POWER_BUTTON_GPIO_NUM)
 
-#define S4_HEART_BEAT_TX_GPIO_NUM   GPIO_NUM_14
+// Heart rate pulse output to the S4 monitor, GPIO15 in series with a 10k
+// resistor into the 3.5mm TRS jack (tip).
+#define S4_HEART_BEAT_TX_GPIO_NUM   GPIO_NUM_15
 #define S4_HEART_BEAT_TX_GPIO_SEL   (1ull << S4_HEART_BEAT_TX_GPIO_NUM)
 
 

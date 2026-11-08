@@ -23,8 +23,26 @@ esp_err_t state_manager_init(state_manager_handle_t* sm_handle)
     driver->led_strip = led_strip_init(STATE_LED_CHANNEL, STATE_LED_GPIO, 1);
     ets_delay_us(5000);
 
-    ESP_ERROR_CHECK(driver->led_strip->set_pixel(driver->led_strip, 0, 0, 0, 0));
-    ESP_ERROR_CHECK(driver->led_strip->refresh(driver->led_strip, 100));
+    // Power-on self test: sweep the status LED through red/green/blue/white
+    // so the user can confirm at a glance that the board booted and the LED
+    // works.
+    {
+        typedef struct { uint8_t r, g, b; } color_t;
+        const color_t sweep[] = {
+            { 255, 0, 0 },
+            { 0, 255, 0 },
+            { 0, 0, 255 },
+            { 255, 255, 255 },
+        };
+        for (int i = 0; i < 4; i++)
+        {
+            ESP_ERROR_CHECK(driver->led_strip->set_pixel(driver->led_strip, 0, sweep[i].r, sweep[i].g, sweep[i].b));
+            ESP_ERROR_CHECK(driver->led_strip->refresh(driver->led_strip, 100));
+            vTaskDelay(400 / portTICK_PERIOD_MS);
+        }
+        ESP_ERROR_CHECK(driver->led_strip->set_pixel(driver->led_strip, 0, 0, 0, 0));
+        ESP_ERROR_CHECK(driver->led_strip->refresh(driver->led_strip, 100));
+    }
 
     *sm_handle = driver;
 

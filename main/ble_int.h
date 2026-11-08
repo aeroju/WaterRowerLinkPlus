@@ -1,12 +1,19 @@
 #define BLE_NOTIFY_TASKS_MAX        10
 
-#define BLE_AD_INTERVAL             (8000) // 5s
+// Advertising interval in 0.625ms units.  200ms so phone apps discover the
+// device within their (usually short) scan windows.  Power switch controls
+// uptime, so the extra advertising current is irrelevant.
+#define BLE_AD_INTERVAL             (320) // 200ms
 
 #define PROFILE_NUM                 1
 #define PROFILE_APP_IDX             0
 #define WATERROWER_SERVER_APP_ID    0
 #define WATERROWER_CLIENT_APP_ID    1
-#define WATERROWER_DEVICE_NAME      "WaterRowerLink+"
+// WaterRower Connect dropped support for non-official advertisement formats
+// around v2.13 (2023).  The official ComModule (Microchip RN4871 based)
+// advertises with a name in the format "S4 nn" (per asensei's docs), so use
+// "S4 01" and list FTMS (0x1826) in the service UUID list.
+#define WATERROWER_DEVICE_NAME      "S4 01"
 #define CSC_SVC_INST_ID             0
 #define FTMS_SVC_INST_ID            1
 #define HR_SVC_INST_ID              2

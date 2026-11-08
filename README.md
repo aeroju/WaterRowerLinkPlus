@@ -115,7 +115,7 @@ Hardware design is available in the KiCad projects in this repo.  There are two 
 - Microscope: [AMScope SM745NTP-B](https://amscope.com/products/sm745ntp-b) + [DAB](https://amscope.com/products/DAB)
 
 ## Usage
-Once power is provided, a red LED will illuminate on the board and should be detectable in apps.  Press the button connected to SW2 turn on the S4 monitor.  The NeoPixel will illuminate green when it detects it over the USB connection.  It will power off automatically after 30 minutes of inactivity.  When WRL+ is receiving data from the S4, the LED will turn cyan. When it detects a heart rate over BLE or ANT+, it will beat red.
+Power is provided by a 5V source on the breadboard power rail (e.g. a 5V UPS/power bank with the USB-A VBUS hardwired to the rail).  Once power is provided, a red LED will illuminate on the board and should be detectable in apps.  The S4 monitor is powered directly over the USB connection and a session starts as soon as it enumerates.  Turning the main power switch off powers everything down.  When WRL+ is receiving data from the S4, the LED will turn cyan. When it detects a heart rate over BLE or ANT+, it will beat red.
 Note the software only supports one HRM.  If multiple are detected, only the first one seen will be connected.
 
 ## Known Issues
