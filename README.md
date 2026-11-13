@@ -3,6 +3,84 @@
 ## Description
 WaterRower Link+ is a bluetooth module designed for any WaterRower with the S4 monitor.  It provides all the functionality of the official WaterRower ComModule as well as many additional features.
 
+---
+
+# 简化版搭建指南（USB OTG 直连方案）
+
+本仓库是 [nickbits1024/WaterRowerLinkPlus](https://github.com/nickbits1024/WaterRowerLinkPlus) 的简化改造版。
+利用 ESP32-S3 开发板自带的 USB OTG 口直连 S4 显示器，**去掉了 LM3525 电源开关芯片、USB-A 母座、面包板、按钮**，
+整机只需焊接 2 处（USB-OTG 跳线 + 一根信号线），由一个 5V UPS 电源开关统一控制开关机，非常适合上手。
+
+## 配件清单
+
+| 配件 | 说明 |
+|---|---|
+| ESP32-S3 开发板 | DevKitC-1 兼容板（双 Type-C 口，RGB 灯在 GPIO48；若为 v1.1 版需改 `STATE_LED_GPIO` 为 38） |
+| 5V/3A UPS 升压模块 | 双 18650 供电、带充电和欠压保护 |
+| 18650 电池 ×2 | |
+| 自锁/拨动开关 | 串在 UPS 输出正极，控制整机开关机 |
+| USB-C 公转 USB-A 母转接头 | 手机 OTG 转接头即可（USB 2.0 / 3.x 均可） |
+| 3.5mm 三段插头（TRS）×1 | 接 S4 心率输入口 |
+| 10K 电阻 ×1 | 心率脉冲信号串联限流 |
+| 杜邦线若干 | 供电 + 心率信号 |
+
+## 接线方式
+
+```
+                    ┌──────────────── ESP32-S3 开发板 ────────────────┐
+  UPS 5V(经开关) ──►│ 5V 脚                                          │
+  UPS GND ────────►│ G 脚                                            │
+                    │                                                │
+   [焊桥: USB-OTG] │ "USB" Type-C 口 ──► C转A转接头 ──► S4 原装USB线 │
+                    │                                 (供电 + D+/D-)  │
+                    │ GPIO15 ──[10K]──► 3.5mm 中间段(Ring)           │
+                    └────────────────────────────────────────────────┘
+                                      3.5mm ──► S4 心率输入口（Tip/Sleeve 不接）
+```
+
+| 连接 | 说明 |
+|---|---|
+| UPS 5V/GND → 开发板 5V/G | 整机供电；开关控制开关机，S4 随开发板同时上电 |
+| 开发板 "USB" Type-C 口 → C转A转接头 → S4 | **先焊桥 "USB-OTG" 跳线**（短接该口 VBUS 上的二极管），5V 才能对外输出给 S4；D+/D− 板内直连 GPIO20/19，无需飞线 |
+| GPIO15 → 10K → 3.5mm Ring（中间段） | 心率脉冲输出到 S4 屏幕；地回路走 USB 线，尖端(Tip)和根部(Sleeve) 悬空不接 |
+
+**注意事项**
+- USB 的 D−/D+ 在 ESP32-S3 上**固定为 GPIO19/GPIO20**（芯片内部直连 USB PHY），不可改到其它引脚
+- 焊桥后 "USB" 口**永远不要插电脑或充电器**（会与 UPS 5V 直连冲突）；刷机/看日志用另一个 "COM" 口
+- S4 与 ESP32 通过 USB 线共地，3.5mm 只需一根信号线
+
+## 代码改造（相对上游）
+
+| 文件 | 改动 |
+|---|---|
+| `main/s4.c` | 开机自动启动 S4 会话（不再等按钮）；移除 30 分钟无活动关断（VBUS 常通）；USB 断线自动重连不重启；关停流程改为 best-effort |
+| `main/s4_int.h` | 心率脉冲输出 GPIO14 → **GPIO15**；GPIO8（原 LM3525 控制）/ GPIO10（原按钮）闲置；新增枚举竞态兜底（S4 先于固件就绪时主动查询设备列表） |
+| `main/main.c` + `main/CMakeLists.txt` | 移除 ANT+ 模块驱动（无此硬件，释放 GPIO15/16/17/18） |
+| `main/ble.c` + `main/ble_int.h` | 广播名改为 **"S4 01"**（官方 ComModule 命名格式，新版官方 App 只认此格式）；FTMS(0x1826) 加入服务 UUID 列表；广播间隔 5s → 200ms |
+| `main/state_manager.c` + `main/state_manager_int.h` | RGB 灯定为 GPIO48；新增开机彩色自检（红→绿→蓝→白） |
+| `sdkconfig` | 适配 ESP-IDF v5.4.4 重新生成 |
+
+## 烧录
+
+```bash
+# 安装 ESP-IDF v5.4.x 后
+. ~/esp/esp-idf/export.sh
+idf.py set-target esp32s3   # 仓库已含 sdkconfig，可跳过
+idf.py -p /dev/cu.usbserial-XXXX build flash monitor
+```
+
+## 使用流程
+
+1. 拨动开关开机 → RGB 灯红绿蓝白扫过（自检）→ S4 屏幕亮起 → 绿灯常亮（S4 数据通道就绪）
+2. 手机打开 WaterRower Connect 搜索 **"S4 01"** 连接（Zwift 等 FTMS App 同样可用）
+3. 佩戴蓝牙心率带 → S4 屏幕显示心率，RGB 灯随心跳闪红
+4. 划船数据实时同步到 App
+5. 用完拨开关关机（无任何 flash 写入，随时断电安全）
+
+---
+
+*以下为上游原始项目文档（原始面包板 / PCB 方案，供参考）：*
+
 ![Components](docs/S4.jpg)
 
 ## Features
